@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Player</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --card:#f3f3f5; --line:#d4d4d8; --accent:#e5484d; --muted:#666; --btn:#111; --btnfg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#f2f2f2; --card:#1c1c1f; --line:#3a3a40; --muted:#999; --btn:#f2f2f2; --btnfg:#111; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         display:flex; flex-direction:column; align-items:center; padding:24px; }
+  .wrap { width:100%; max-width:960px; }
+  h1 { margin:0 0 16px; font-size:1.4rem; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  input { flex:1; min-width:200px; padding:10px; border-radius:8px; border:1px solid var(--line);
+          background:var(--card); color:var(--fg); font-size:1rem; }
+  button { padding:10px 16px; border:0; border-radius:8px; cursor:pointer; background:var(--btn);
+           color:var(--btnfg); font-size:.95rem; font-weight:600; }
+  button.ghost { background:var(--card); color:var(--fg); border:1px solid var(--line); }
+  .stage { position:relative; }
+  video { width:100%; background:#000; border-radius:12px; display:block; aspect-ratio:16/9; }
+  #unmute { position:absolute; right:12px; top:12px; display:none; }
+  .status { margin:12px 0; font-weight:600; color:var(--muted); }
+  .status.live { color:var(--accent); }
+  .status.err { color:var(--accent); }
+  .hint { color:var(--muted); font-size:.85rem; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">Stream Player</h1>
+
+  <div class="bar">
+    <input id="server" placeholder="Server PC address, e.g. 192.168.1.50" spellcheck="false" autocomplete="off">
+    <button id="connect">Connect</button>
+    <button class="ghost" id="fs">Fullscreen</button>
+  </div>
+
+  <div class="stage">
+    <video id="video" controls autoplay muted playsinline></video>
+    <button id="unmute">🔊 Unmute</button>
+  </div>
+  <div class="status" id="status">Enter the server address and press Connect.</div>
+  <div class="hint">
+    Tip: share a ready-made link by adding <code>?server=192.168.1.50</code> to this page's address.
+    Works in Chrome, Edge and Firefox on a computer. Needs internet once to load the video library.
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  const video = $("video");
+  let base = "", player = null, lowLatency = true, timer = null;
+
+  // ---- remember the server address (safe if storage is blocked) ----
+  const store = {
+    get() { try { return localStorage.getItem("rtmp_server") || ""; } catch (e) { return ""; } },
+    set(v) { try { localStorage.setItem("rtmp_server", v); } catch (e) {} }
+  };
+
+  function normalize(v) {
+    v = v.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    if (!v) return "";
+    return /:\d+$/.test(v) ? v : v + ":8080";
+  }
+
+  function setStatus(text, cls) { $("status").textContent = text; $("status").className = "status " + (cls || ""); }
+
+  function stopPlayer() {
+    if (!player) return;
+    try { player.pause(); player.unload(); player.detachMediaElement(); player.destroy(); } catch (e) {}
+    player = null;
+    $("unmute").style.display = "none";
+  }
+
+  function startPlayer() {
+    if (!window.mpegts || !mpegts.isSupported()) {
+      setStatus("This browser can't play the stream (or the video library didn't load). Use Chrome, Edge or Firefox with internet.", "err");
+      return;
+    }
+    const cfg = lowLatency
+      ? { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false,
+          liveBufferLatencyChasing: true, liveBufferLatencyMaxLatency: 1.5,
+          liveBufferLatencyMinRemain: 0.4, autoCleanupSourceBuffer: true }
+      : { enableWorker: false, lazyLoad: false, autoCleanupSourceBuffer: true };
+    player = mpegts.createPlayer({ type: "flv", isLive: true, url: `http://${base}/live.flv` }, cfg);
+    player.attachMediaElement(video);
+    player.on(mpegts.Events.ERROR, stopPlayer);   // next check retries
+    player.load();
+    const p = player.play();
+    if (p && p.catch) p.catch(() => {});
+    $("unmute").style.display = video.muted ? "block" : "none";
+  }
+
+  async function tick() {
+    try {
+      const r = await fetch(`http://${base}/api/status`, { cache: "no-store" });
+      const st = await r.json();
+      if (st.live && !player) startPlayer();
+      if (!st.live && player) stopPlayer();
+      if (st.live) setStatus(`● LIVE  ·  ${st.kbps} kbps  ·  ${st.viewers} watching`, "live");
+      else setStatus(st.error || "Connected. Waiting for the GoPro to go live...", "");
+    } catch (e) {
+      stopPlayer();
+      setStatus(`Can't reach ${base}. Check the address, that the server is running, and the firewall.`, "err");
+    }
+  }
+
+  async function connect() {
+    base = normalize($("server").value);
+    if (!base) { setStatus("Enter the server address first.", "err"); return; }
+    $("server").value = base.replace(/:8080$/, "");
+    store.set($("server").value);
+    clearInterval(timer);
+    stopPlayer();
+    try {
+      const c = await (await fetch(`http://${base}/api/public`, { cache: "no-store" })).json();
+      document.title = c.title;
+      $("title").textContent = c.title;
+      lowLatency = c.low_latency;
+    } catch (e) { /* tick() will explain the problem */ }
+    tick();
+    timer = setInterval(tick, 2000);
+  }
+
+  $("connect").onclick = connect;
+  $("server").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+  $("unmute").onclick = () => { video.muted = false; $("unmute").style.display = "none"; };
+  $("fs").onclick = () => { (video.requestFullscreen || video.webkitRequestFullscreen).call(video); };
+
+  // address priority: ?server=... > this page's own host (when served by the server) > remembered
+  const q = new URLSearchParams(location.search).get("server");
+  const own = location.protocol === "http:" && location.host ? location.host : "";
+  const start = q || own || store.get();
+  if (start) { $("server").value = start; connect(); }
+</script>
+</body>
+</html>
