@@ -1,0 +1,7 @@
+{
+  "title": "My GoPro Stream",
+  "rtmp_port": 1935,
+  "stream_key": "gopro",
+  "record": false,
+  "low_latency": true
+}

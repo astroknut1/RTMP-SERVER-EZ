@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTMP Settings</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --card:#f3f3f5; --line:#d4d4d8; --accent:#e5484d; --ok:#2a9d57;
+          --muted:#666; --btn:#111; --btnfg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#f2f2f2; --card:#1c1c1f; --line:#3a3a40; --muted:#999; --btn:#f2f2f2; --btnfg:#111; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         display:flex; justify-content:center; padding:24px; }
+  .wrap { width:100%; max-width:560px; }
+  .top { display:flex; justify-content:space-between; align-items:center; }
+  h1 { margin:0; font-size:1.4rem; }
+  a { color:var(--fg); }
+  .card { background:var(--card); border-radius:12px; padding:16px; margin:16px 0; }
+  .pill { display:inline-block; padding:4px 10px; border-radius:99px; font-size:.85rem; font-weight:600; background:var(--line); }
+  .pill.on { background:var(--ok); color:#fff; }
+  .pill.live { background:var(--accent); color:#fff; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
+  input[type=text], input[type=number] { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
+    background:var(--bg); color:var(--fg); font-size:1rem; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  .check { display:flex; align-items:flex-start; gap:8px; margin-top:14px; }
+  .check input { width:18px; height:18px; margin-top:2px; }
+  button { margin-top:16px; width:100%; padding:12px; border:0; border-radius:8px; cursor:pointer;
+           background:var(--btn); color:var(--btnfg); font-size:1rem; font-weight:600; }
+  button.small { width:auto; margin:8px 0 0; padding:6px 12px; font-size:.85rem; }
+  button:disabled { opacity:.5; }
+  code { background:rgba(128,128,128,.2); padding:2px 6px; border-radius:4px; word-break:break-all; }
+  #msg { margin-top:12px; font-weight:600; min-height:1.2em; }
+  #msg.err, #err { color:var(--accent); } #msg.ok { color:var(--ok); }
+  .muted { color:var(--muted); font-size:.85rem; }
+  ol { padding-left:20px; margin:8px 0 0; line-height:1.6; font-size:.92rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>RTMP Settings</h1>
+    <a href="/">&larr; Back to player</a>
+  </div>
+
+  <div class="card">
+    <span class="pill" id="pill">Checking...</span>
+    <span class="muted" id="info"></span>
+    <div id="err"></div>
+  </div>
+
+  <div class="card">
+    <b>Stream URL</b>
+    <div style="margin-top:8px"><code id="gpUrl"></code></div>
+    <button class="small" id="copy">Copy</button>
+    <ol>
+      <li>Make sure the streaming device is on the <b>same network</b> as this PC.</li>
+      <li>In your streaming app (OBS, camera, phone), choose Custom RTMP.</li>
+      <li>Paste the URL above and start streaming.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <label>Page title</label>
+    <input type="text" id="title" maxlength="60">
+
+    <div class="row">
+      <div><label>RTMP port (your stream connects here)</label><input type="number" id="rtmp_port"></div>
+      <div><label>Stream key (empty = allow any)</label><input type="text" id="stream_key"></div>
+    </div>
+
+    <div class="check">
+      <input type="checkbox" id="low_latency">
+      <span>Low latency mode <span class="muted">(uncheck if the video stutters)</span></span>
+    </div>
+    <div class="check">
+      <input type="checkbox" id="record">
+      <span>Record streams to the <code>recordings</code> folder <span class="muted">(.flv, opens in VLC)</span></span>
+    </div>
+
+    <button id="save">Save</button>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let lanIp = "localhost";
+
+  function updateUrl() {
+    const p = $("rtmp_port").value;
+    $("gpUrl").textContent = `rtmp://${lanIp}${p == 1935 ? "" : ":" + p}/live/${$("stream_key").value || "stream"}`;
+  }
+
+  async function load() {
+    const pub = await (await fetch("/api/public")).json();
+    lanIp = pub.lan_ip;
+    const res = await fetch("/api/settings");
+    if (!res.ok) { $("msg").className = "err"; $("msg").textContent = "Open this page on the server PC."; return; }
+    const s = await res.json();
+    $("title").value = s.title;
+    $("rtmp_port").value = s.rtmp_port;
+    $("stream_key").value = s.stream_key;
+    $("low_latency").checked = s.low_latency;
+    $("record").checked = s.record;
+    updateUrl();
+  }
+
+  async function refreshStatus() {
+    try {
+      const st = await (await fetch("/api/status")).json();
+      const pill = $("pill");
+      if (st.live) {
+        pill.textContent = "● LIVE"; pill.className = "pill live";
+        $("info").textContent = `  ${st.kbps} kbps · ${st.viewers} watching · from ${st.from}` +
+                                (st.recording ? ` · recording ${st.recording}` : "");
+      } else {
+        pill.textContent = "Waiting for a stream"; pill.className = "pill on";
+        $("info").textContent = "";
+      }
+      $("err").textContent = st.error || "";
+    } catch (e) {}
+  }
+
+  $("save").onclick = async () => {
+    const body = {
+      title: $("title").value, rtmp_port: $("rtmp_port").value, stream_key: $("stream_key").value,
+      low_latency: $("low_latency").checked, record: $("record").checked
+    };
+    $("save").disabled = true;
+    $("msg").className = ""; $("msg").textContent = "Saving...";
+    try {
+      const res = await fetch("/api/settings", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (res.ok) { $("msg").className = "ok"; $("msg").textContent = "Saved. New connections use these settings."; }
+      else { $("msg").className = "err"; $("msg").textContent = data.error || "Error"; }
+    } catch (e) { $("msg").className = "err"; $("msg").textContent = "Could not reach the server."; }
+    $("save").disabled = false;
+    refreshStatus();
+  };
+
+  $("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("gpUrl").textContent); $("copy").textContent = "Copied!"; }
+    catch (e) { $("copy").textContent = "Select it and press Ctrl+C"; }
+    setTimeout(() => $("copy").textContent = "Copy", 1500);
+  };
+
+  ["rtmp_port", "stream_key"].forEach(f => $(f).addEventListener("input", updateUrl));
+  load();
+  refreshStatus();
+  setInterval(refreshStatus, 2000);
+</script>
+</body>
+</html>

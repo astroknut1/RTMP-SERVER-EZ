@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --card:#f3f3f5; --accent:#e5484d; --muted:#666; --btn:#111; --btnfg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#f2f2f2; --card:#1c1c1f; --muted:#999; --btn:#f2f2f2; --btnfg:#111; }
+  }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--fg);
+         display:flex; flex-direction:column; align-items:center; padding:24px; }
+  .top { width:100%; max-width:960px; display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+  h1 { margin:0; font-size:1.4rem; }
+  .btn { background:var(--btn); color:var(--btnfg); text-decoration:none; padding:8px 14px; border:0;
+         border-radius:8px; font-size:.9rem; cursor:pointer; }
+  #settingsBtn { display:none; }
+  .stage { position:relative; width:100%; max-width:960px; }
+  video { width:100%; background:#000; border-radius:12px; display:block; aspect-ratio:16/9; }
+  #unmute { position:absolute; right:12px; top:12px; display:none; }
+  .status { margin:12px 0; font-weight:600; color:var(--muted); }
+  .status.live { color:var(--accent); }
+  .card { background:var(--card); border-radius:12px; padding:16px; max-width:928px; width:100%;
+          box-sizing:border-box; font-size:.95rem; line-height:1.7; display:none; }
+  code { background:rgba(128,128,128,.2); padding:2px 6px; border-radius:4px; word-break:break-all; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1 id="title">Stream</h1>
+    <a class="btn" id="settingsBtn" href="/settings">Settings</a>
+  </div>
+
+  <div class="stage">
+    <video id="video" controls autoplay muted playsinline></video>
+    <button class="btn" id="unmute">🔊 Unmute</button>
+  </div>
+  <div class="status" id="status">Waiting for a stream...</div>
+
+  <div class="card" id="info">
+    <b>Stream to this URL</b> (OBS, a camera, or any RTMP app):<br>
+    <code id="url"></code><br>
+    <span style="color:var(--muted)">Start streaming and this page plays automatically.</span>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const video = $("video");
+    let player = null, lowLatency = true;
+
+    function stopPlayer() {
+      if (!player) return;
+      try { player.pause(); player.unload(); player.detachMediaElement(); player.destroy(); } catch (e) {}
+      player = null;
+      $("unmute").style.display = "none";
+    }
+
+    function startPlayer() {
+      if (!window.mpegts || !mpegts.isSupported()) {
+        $("status").textContent = "This browser can't play the stream. Use Chrome, Edge or Firefox on a computer.";
+        return;
+      }
+      const cfg = lowLatency
+        ? { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false,
+            liveBufferLatencyChasing: true, liveBufferLatencyMaxLatency: 1.5,
+            liveBufferLatencyMinRemain: 0.4, autoCleanupSourceBuffer: true }
+        : { enableWorker: false, lazyLoad: false, autoCleanupSourceBuffer: true };
+      player = mpegts.createPlayer({ type: "flv", isLive: true, url: "/live.flv" }, cfg);
+      player.attachMediaElement(video);
+      player.on(mpegts.Events.ERROR, stopPlayer);   // the next status check retries
+      player.load();
+      const p = player.play();
+      if (p && p.catch) p.catch(() => {});
+      $("unmute").style.display = video.muted ? "block" : "none";
+    }
+
+    $("unmute").onclick = () => { video.muted = false; $("unmute").style.display = "none"; };
+
+    async function tick() {
+      try {
+        const st = await (await fetch("/api/status")).json();
+        if (st.live && !player) startPlayer();
+        if (!st.live && player) stopPlayer();
+        const el = $("status");
+        if (st.live) {
+          el.textContent = `● LIVE  ·  ${st.kbps} kbps  ·  ${st.viewers} watching`;
+          el.className = "status live";
+        } else {
+          el.textContent = st.error || "Waiting for a stream...";
+          el.className = "status";
+        }
+      } catch (e) {}
+    }
+
+    async function init() {
+      const c = await (await fetch("/api/public")).json();
+      document.title = c.title;
+      $("title").textContent = c.title;
+      lowLatency = c.low_latency;
+      if (c.local) {
+        $("settingsBtn").style.display = "inline-block";
+        $("info").style.display = "block";
+        const port = c.rtmp_port === 1935 ? "" : ":" + c.rtmp_port;
+        $("url").textContent = `rtmp://${c.lan_ip}${port}/live/${c.stream_key || "stream"}`;
+      }
+      tick();
+      setInterval(tick, 2000);
+    }
+    init();
+  </script>
+</body>
+</html>
